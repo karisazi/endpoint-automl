@@ -36,7 +36,7 @@ def training_regression():
         if not name:
             return "Error: Model name is not provided.", 400
         
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], f'dataset_{name}.csv')
+        file_path = os.path.join(os.path.abspath(os.path.dirname(__file__)),app.config['UPLOAD_FOLDER'], f'dataset_{name}.csv')
         file.save(file_path)
         
         df = pd.read_csv(file_path)
