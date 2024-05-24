@@ -2,10 +2,8 @@ import h2o
 from h2o.automl import H2OAutoML
 import pandas as pd
 from sklearn.metrics import mean_absolute_error
-# import warnings
-# import locale
-# locale.setlocale(locale.LC_ALL, 'en_GB.UTF-8')
-# warnings.filterwarnings('ignore')
+
+from datetime import timedelta
 
 class H2OModel:
     def __init__(self, df, y_target, date_col):
@@ -19,30 +17,38 @@ class H2OModel:
         self.result = None
         self.model = None
         self.leaderboard = None
+        self.modified_data = None
 
     def run_modelling(self):
         h2o.init(nthreads=-1)
         df = self.df[[self.date_col, self.y_target]]
-        # Convert to H2O Frame
-        hf = h2o.H2OFrame(df)
+
 
         # Specify the date column
-        hf[self.date_col] = hf[self.date_col].as_date('%Y-%m-%d')
+        df[self.date_col] = pd.to_datetime(df[self.date_col])
+        df = df.set_index(self.date_col)
         
-        df_processed = process_data(df, self.y_target)
+        df = self.create_lagged_features(df, lags=[1, 2, 3])
+        df = self.create_rolling_features(df, window=7)
+        df.dropna(inplace=True)
+        self.modified_data = df
 
-        df_processed.reset_index(drop=True,inplace=True)
-        self.data_train = h2o.H2OFrame(df_processed.loc[:int(df_processed.shape[0]*0.8),:])
-        self.data_test = h2o.H2OFrame(df_processed.loc[int(df_processed.shape[0]*0.8):,:])
         
-        self.x_features = df_processed.columns.tolist()
-        self.x_features = [x for x in self.x_features if x != self.y_target]
+        X = df.columns.drop(self.y_target).tolist()
+        y = self.y_target
+        
+        # Convert to H2O Frame
+        hf = h2o.H2OFrame(df)
+        
+        train, test = hf.split_frame(ratios=[0.8], seed=1234)
+
 
         aml = H2OAutoML(max_runtime_secs = 30, seed = 42)
-        aml.train(x=self.x_features, y=self.y_target, training_frame=self.data_train, leaderboard_frame = self.data_test)
+        aml.train(x=X, y=y, training_frame=train)
         self.model = aml.leader
         self.leaderboard = aml.leaderboard
-        self.result = self.model.predict(self.data_test)
+        self.data_test=test
+        self.result = self.model.predict(test)
         
     def get_model(self):
         return self.model
@@ -65,24 +71,20 @@ class H2OModel:
     
     def get_important_features(self):
         varimp = self.model.varimp(use_pandas=True)['variable']
-        
         return varimp[:5]
 
-
-def process_data(df, target):
-    numerical_df = df.select_dtypes(include=['number'])
-    df2 = numerical_df.copy()
-    num_lags = 3 # number of lags and window lenghts for mean aggregation
-    delay = 1 # predict target one step ahead
-    for column in df2:
-        for lag in range(1,num_lags+1):
-            df2[column + '_lag' + str(lag)] = df2[column].shift(lag*-1-(delay-1))
-            if column != 'wnd_dir':
-                df2[column + '_avg_window_length' + str(lag+1)] = df2[column].shift(-1-(delay-1)).rolling(window=lag+1,center=False).mean().shift(1-(lag+1))
-
-    df2.dropna(inplace=True)
+    def generate_future_dates(self, num_days):
+        last_date = self.df[self.date_col].max()
+        future_dates = [last_date + timedelta(days=i) for i in range(1, num_days + 1)]
+        future_df = pd.DataFrame({self.date_col: future_dates})
+        return future_df
     
-    mask = (df2.columns.str.contains(target) | df2.columns.str.contains('lag') | df2.columns.str.contains('window'))
-    df_processed = df2[df2.columns[mask]]
+    def create_lagged_features(self, data, lags):
+        for lag in lags:
+            data[f'lag_{lag}'] = data[self.y_target].shift(lag)
+        return data
 
-    return df_processed
+    def create_rolling_features(self, data, window):
+        data[f'rolling_mean_{window}'] = data[self.y_target].rolling(window=window).mean()
+        data[f'rolling_std_{window}'] = data[self.y_target].rolling(window=window).std()
+        return data
