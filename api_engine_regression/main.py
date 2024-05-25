@@ -7,19 +7,33 @@ from wtforms import FileField, SubmitField
 from wtforms.validators import InputRequired
 import h2o
 from regression import H2OModel
+from flask_wtf import CSRFProtect
+from wtforms import FileField, SubmitField, StringField
+from wtforms.validators import DataRequired
+from flask_wtf.csrf import generate_csrf
 
-# Initialize the Flask application
+
+
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'supersecretkey'
+app.config['SECRET_KEY'] = 'superb'
 app.config['UPLOAD_FOLDER'] = 'static/files'
+
+# Add CSRF token
+csrf = CSRFProtect(app)
+
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
 
-# Define a file upload form
 class UploadFileForm(FlaskForm):
-    file = FileField("File", validators=[InputRequired()])
-    submit = SubmitField("Submit")
+    file = FileField('CSV File', validators=[DataRequired()])
+    y_target = StringField('Target Column', validators=[DataRequired()])
+    submit = SubmitField('Upload')
+
+@app.route('/get_csrf_token', methods=['GET'])
+def get_csrf_token():
+    token = generate_csrf()
+    return jsonify({"csrf_token": token})
 
 @app.route('/', methods=['GET', 'POST'])
 def home():
@@ -49,11 +63,16 @@ def training_regression():
 
         model_directory = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'model')
         os.makedirs(model_directory, exist_ok=True)
-        model_path = h2o.save_model(model=automl.model, path=model_directory, filename=f'regression_{name}', force=True)
+        h2o.save_model(model=automl.model, path=model_directory, filename=f'regression_{name}', force=True)
         
-        return f"Model {name} successfully trained with target {y_target}. MAE: {mae}"
-    
-    return render_template('index.html', form=form)
+        response = {"message": f"Model successfully trained with target {y_target} gives error mae: {mae}"}
+                
+        return jsonify(response)
+            
+    # Check errors
+    errors = form.errors
+    return jsonify({"error": "Form is not valid", "details": errors}), 400
+
 
 @app.route('/regression/predict', methods=['POST'])
 def predict_regression():
